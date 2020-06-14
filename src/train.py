@@ -3,6 +3,7 @@ import time
 import skimage
 import numpy as np
 import pandas as pd
+from ast import literal_eval
 from PIL import Image
 from sklearn.model_selection import StratifiedKFold
 import matplotlib.pyplot as plt
@@ -14,6 +15,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torchvision import transforms
+import torchvision.utils as vutils
 from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader, Dataset
 from warmup_scheduler import GradualWarmupScheduler
@@ -26,7 +28,7 @@ except ModuleNotFoundError:
     APEX_AVAILABLE = False
     
 from model import enetv2
-from data_loader import PANDADataset
+from data_loader import PANDADataset, collate_fn
 
 device = torch.device('cuda')
 
@@ -94,10 +96,10 @@ def val_epoch(model, loader, criterion, df_valid):
 def main():
 
     data_dir = '../data/'
-    df_biopsy = pd.read_csv(os.path.join(data_dir, 'train.csv'))
-    image_folder = os.path.join(data_dir, 'train_images_tiles_36_256x256')
+    df_biopsy = pd.read_csv(os.path.join(data_dir, 'train_with_dim.csv'))
+    image_folder = os.path.join(data_dir, 'train_images')
 
-    kernel_type = 'efficientnet-b0-36_256x256'
+    kernel_type = 'efficientnet-b0-full'
     enet_type = 'efficientnet-b0'
     num_folds = 5
     fold = 0
@@ -134,20 +136,19 @@ def main():
         transforms.ToTensor(),
         transforms.Normalize(mean, std)
     ])
+    
+    df_train = df_biopsy.loc[df_biopsy['fold'] != fold]
+    df_valid = df_biopsy.loc[df_biopsy['fold'] == fold]
 
-    train_idx = np.where((df_biopsy['fold'] != fold))[0]
-    valid_idx = np.where((df_biopsy['fold'] == fold))[0]
-
-    df_train  = df_biopsy.loc[train_idx]
-    df_valid = df_biopsy.loc[valid_idx]
-
-    dataset_train = PANDADataset(df_train, image_folder, n_tiles, out_dim, transform=transform_train)
-    dataset_valid = PANDADataset(df_valid, image_folder, n_tiles, out_dim, transform=transform_val)
+    dataset_train = PANDADataset(df_train, image_folder, n_tiles, out_dim, \
+        transform=transform_train)
+    dataset_valid = PANDADataset(df_valid, image_folder, n_tiles, out_dim, \
+        transform=transform_val)
 
     train_loader = DataLoader(dataset_train, 
                             batch_size=batch_size, 
                             sampler=RandomSampler(dataset_train),
-                            num_workers=num_workers)
+                            num_workers=num_workers,)
     valid_loader = DataLoader(dataset_valid,
                             batch_size=batch_size,
                             sampler=SequentialSampler(dataset_valid),
