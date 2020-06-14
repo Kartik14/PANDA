@@ -3,6 +3,7 @@ import time
 import skimage
 import numpy as np
 import pandas as pd
+from ast import literal_eval
 from PIL import Image
 from sklearn.model_selection import StratifiedKFold
 import matplotlib.pyplot as plt
@@ -14,6 +15,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torchvision import transforms
+import torchvision.utils as vutils
 from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader, Dataset
 from warmup_scheduler import GradualWarmupScheduler
@@ -26,7 +28,7 @@ except ModuleNotFoundError:
     APEX_AVAILABLE = False
     
 from model import enetv2
-from data_loader import PANDADataset
+from data_loader import PANDADataset, collate_fn
 
 device = torch.device('cuda')
 
@@ -94,24 +96,25 @@ def val_epoch(model, loader, criterion, df_valid):
 def main():
 
     data_dir = '../data/'
-    df_biopsy = pd.read_csv(os.path.join(data_dir, 'train.csv'))
-    image_folder = os.path.join(data_dir, 'train_images_tiles_36_256x256')
+    df_biopsy = pd.read_csv(os.path.join(data_dir, 'train_with_dim.csv'))
+    image_folder = os.path.join(data_dir, 'train_images')
 
-    kernel_type = 'efficientnet-b0-36_256x256'
+    kernel_type = 'efficientnet-b0-full'
     enet_type = 'efficientnet-b0'
     num_folds = 5
     fold = 0
     tile_size = 256
     image_size = 256
     n_tiles = 36
-    batch_size = 12
+    batch_size = 80
     num_workers = 16
     out_dim = 5
     init_lr = 3e-4
     warmup_factor = 10
-    warmup_epo = 1
-    n_epochs = 30
+    warmup_epo = 5
+    n_epochs = 100
     use_amp = True
+    mode = 'full' # 'tile' or 'full'
 
     if use_amp and not APEX_AVAILABLE:
         print("Error: could not import APEX module")
@@ -122,36 +125,64 @@ def main():
     for i, (train_idx, valid_idx) in enumerate(skf.split(df_biopsy, df_biopsy['isup_grade'])):
         df_biopsy.loc[valid_idx, 'fold'] = i
 
-    mean = [0.90949707, 0.8188697, 0.87795304]
-    std = [0.36357649, 0.49984502, 0.40477625]
-    transform_train = transforms.Compose([
-        transforms.RandomHorizontalFlip(p=0.5),
-        transforms.RandomVerticalFlip(p=0.5),
-        transforms.ToTensor(),
-        transforms.Normalize(mean, std)
-    ])
-    transform_val = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize(mean, std)
-    ])
+    if mode == 'tile':
+        mean = [0.90949707, 0.8188697, 0.87795304]
+        std = [0.36357649, 0.49984502, 0.40477625]
+        transform_train = transforms.Compose([
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomVerticalFlip(p=0.5),
+            transforms.ToTensor(),
+            transforms.Normalize(mean, std)
+        ])
+        transform_val = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(mean, std)
+        ])
+    else:
+        # normalisation done in collate function
+        transform_train = transforms.Compose([
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomVerticalFlip(p=0.5),
+        ])
+        transform_val = transforms.Compose([])
 
-    train_idx = np.where((df_biopsy['fold'] != fold))[0]
-    valid_idx = np.where((df_biopsy['fold'] == fold))[0]
+        # sorting data by aspect ratio so that similar images are
+        # grouped in same batch
+        image_dims = df_biopsy['image_dim'].to_list()
+        image_dims = [literal_eval(x) for x in image_dims]
+        aspect_ratios = [h/w for (h,w,_) in image_dims]
+        idxs = np.argsort(aspect_ratios)
+        df_biopsy = df_biopsy.iloc[idxs]
 
-    df_train  = df_biopsy.loc[train_idx]
-    df_valid = df_biopsy.loc[valid_idx]
+    df_train = df_biopsy.loc[df_biopsy['fold'] != fold]
+    df_valid = df_biopsy.loc[df_biopsy['fold'] == fold]
 
-    dataset_train = PANDADataset(df_train, image_folder, n_tiles, out_dim, transform=transform_train)
-    dataset_valid = PANDADataset(df_valid, image_folder, n_tiles, out_dim, transform=transform_val)
+    dataset_train = PANDADataset(df_train, image_folder, n_tiles, out_dim, \
+        transform=transform_train, mode=mode)
+    dataset_valid = PANDADataset(df_valid, image_folder, n_tiles, out_dim, \
+        transform=transform_val, mode=mode)
 
-    train_loader = DataLoader(dataset_train, 
-                            batch_size=batch_size, 
-                            sampler=RandomSampler(dataset_train),
-                            num_workers=num_workers)
-    valid_loader = DataLoader(dataset_valid,
-                            batch_size=batch_size,
-                            sampler=SequentialSampler(dataset_valid),
-                            num_workers=num_workers)
+    if mode == 'tile':
+        train_loader = DataLoader(dataset_train, 
+                                batch_size=batch_size, 
+                                sampler=RandomSampler(dataset_train),
+                                num_workers=num_workers,)
+        valid_loader = DataLoader(dataset_valid,
+                                batch_size=batch_size,
+                                sampler=SequentialSampler(dataset_valid),
+                                num_workers=num_workers)
+    else:
+        train_loader = DataLoader(dataset_train, 
+                                batch_size=batch_size, 
+                                sampler=SequentialSampler(dataset_train),
+                                num_workers=num_workers,
+                                collate_fn=collate_fn)
+        valid_loader = DataLoader(dataset_valid,
+                                batch_size=batch_size,
+                                sampler=SequentialSampler(dataset_valid),
+                                num_workers=num_workers,
+                                collate_fn=collate_fn)
+
 
     model = enetv2(enet_type, out_dim=out_dim)    
     model = model.to(device)
