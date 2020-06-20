@@ -3,7 +3,6 @@ import time
 import skimage
 import numpy as np
 import pandas as pd
-from ast import literal_eval
 from PIL import Image
 from sklearn.model_selection import StratifiedKFold
 import matplotlib.pyplot as plt
@@ -15,7 +14,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torchvision import transforms
-import torchvision.utils as vutils
 from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader, Dataset
 from warmup_scheduler import GradualWarmupScheduler
@@ -96,23 +94,24 @@ def val_epoch(model, loader, criterion, df_valid):
 def main():
 
     data_dir = '../data/'
-    df_biopsy = pd.read_csv(os.path.join(data_dir, 'train_with_dim.csv'))
-    image_folder = os.path.join(data_dir, 'train_images')
+    df_biopsy = pd.read_csv(os.path.join(data_dir, 'train.csv'))
+    image_folder = os.path.join(data_dir, 'train_images_tiles_36_256x256')
 
-    kernel_type = 'efficientnet-b0-full'
+    kernel_type = 'efficientnet-b0-36_256x256_tile_MIL'
     enet_type = 'efficientnet-b0'
     num_folds = 5
     fold = 0
     tile_size = 256
     image_size = 256
     n_tiles = 36
-    batch_size = 12
+    batch_size = 8
     num_workers = 16
     out_dim = 5
     init_lr = 3e-4
     warmup_factor = 10
     warmup_epo = 1
     n_epochs = 30
+    attn_dim = 256
     use_amp = True
 
     if use_amp and not APEX_AVAILABLE:
@@ -148,13 +147,15 @@ def main():
     train_loader = DataLoader(dataset_train, 
                             batch_size=batch_size, 
                             sampler=RandomSampler(dataset_train),
-                            num_workers=num_workers,)
+                            num_workers=num_workers,
+                            collate_fn=collate_fn)
     valid_loader = DataLoader(dataset_valid,
                             batch_size=batch_size,
                             sampler=SequentialSampler(dataset_valid),
-                            num_workers=num_workers)
+                            num_workers=num_workers,
+                            collate_fn=collate_fn)
 
-    model = enetv2(enet_type, out_dim=out_dim)    
+    model = enetv2(enet_type, out_dim, attn_dim, n_tiles)    
     model = model.to(device)
 
     optimizer = optim.Adam(model.parameters(), lr=init_lr/warmup_factor)
