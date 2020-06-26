@@ -100,14 +100,14 @@ def main():
     df_biopsy = pd.read_csv(os.path.join(data_dir, 'train.csv'))
     image_folder = os.path.join(data_dir, 'train_images')
 
-    kernel_type = 'efficientnet-b0_144x128x128'
+    kernel_type = 'efficientnet-b0_9x512x512'
     enet_type = 'efficientnet-b0'
     num_folds = 5
     fold = 0
-    tile_size = 128
-    n_tiles = 144
-    batch_size = 16
-    num_workers = 16
+    tile_size = 512
+    n_tiles = 9
+    batch_size = 8
+    num_workers = 24
     out_dim = 5
     init_lr = 3e-4
     warmup_factor = 10
@@ -201,7 +201,7 @@ def main():
                 )
         print(content)
         
-        with open('log_{}_fold-{}.txt'.format(kernel_type, fold), 'a') as appender:
+        with open('train_logs/log_{}_fold-{}.txt'.format(kernel_type, fold), 'a') as appender:
             appender.write(content + '\n')
 
         if qwk > qwk_max:
