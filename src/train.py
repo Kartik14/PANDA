@@ -20,6 +20,7 @@ from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader, Dataset
 from warmup_scheduler import GradualWarmupScheduler
 from torch.utils.data.sampler import SubsetRandomSampler, RandomSampler, SequentialSampler
+from torch.utils.tensorboard import SummaryWriter
 
 try:
     from apex import amp
@@ -28,7 +29,7 @@ except ModuleNotFoundError:
     APEX_AVAILABLE = False
     
 from model import enetv2
-from data_loader import PANDADataset, collate_fn
+from data_loader import PANDADataset
 
 device = torch.device('cuda')
 
@@ -91,22 +92,21 @@ def val_epoch(model, loader, criterion, df_valid):
                               weights='quadratic')
     print('qwk', qwk, 'qwk_k', qwk_k, 'qwk_r', qwk_r)
         
-    return val_loss, acc, qwk
+    return val_loss, acc, (qwk, qwk_k, qwk_r)
 
 def main():
 
     data_dir = '../data/'
-    df_biopsy = pd.read_csv(os.path.join(data_dir, 'train_with_dim.csv'))
+    df_biopsy = pd.read_csv(os.path.join(data_dir, 'train.csv'))
     image_folder = os.path.join(data_dir, 'train_images')
 
-    kernel_type = 'efficientnet-b0-full'
+    kernel_type = 'efficientnet-b0_144x128x128'
     enet_type = 'efficientnet-b0'
     num_folds = 5
     fold = 0
-    tile_size = 256
-    image_size = 256
-    n_tiles = 36
-    batch_size = 12
+    tile_size = 128
+    n_tiles = 144
+    batch_size = 16
     num_workers = 16
     out_dim = 5
     init_lr = 3e-4
@@ -114,6 +114,8 @@ def main():
     warmup_epo = 1
     n_epochs = 30
     use_amp = True
+
+    writer = SummaryWriter(f'tensorboard_logs/{kernel_type}/fold-{fold}')
 
     if use_amp and not APEX_AVAILABLE:
         print("Error: could not import APEX module")
@@ -127,8 +129,11 @@ def main():
     mean = [0.90949707, 0.8188697, 0.87795304]
     std = [0.36357649, 0.49984502, 0.40477625]
     transform_train = transforms.Compose([
-        transforms.RandomHorizontalFlip(p=0.5),
-        transforms.RandomVerticalFlip(p=0.5),
+        transforms.RandomChoice([
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomVerticalFlip(p=0.5),
+            transforms.RandomRotation(90)
+        ]),
         transforms.ToTensor(),
         transforms.Normalize(mean, std)
     ])
@@ -140,10 +145,10 @@ def main():
     df_train = df_biopsy.loc[df_biopsy['fold'] != fold]
     df_valid = df_biopsy.loc[df_biopsy['fold'] == fold]
 
-    dataset_train = PANDADataset(df_train, image_folder, n_tiles, out_dim, \
-        transform=transform_train)
-    dataset_valid = PANDADataset(df_valid, image_folder, n_tiles, out_dim, \
-        transform=transform_val)
+    dataset_train = PANDADataset(df_train, image_folder, tile_size, n_tiles, \
+        out_dim, transform=transform_train)
+    dataset_valid = PANDADataset(df_valid, image_folder, tile_size, n_tiles, \
+        out_dim, transform=transform_val)
 
     train_loader = DataLoader(dataset_train, 
                             batch_size=batch_size, 
@@ -174,19 +179,21 @@ def main():
     print("Number of train samples : {}".format(len(dataset_train)))
     print("Number of validation samples : {}".format(len(dataset_valid)))
 
-    best_model = '{}_fold-{}_best.pth'.format(kernel_type, fold)
-    final_model = '{}_fold-{}_final.pth'.format(kernel_type, fold) 
-    save_path = '../trained_models'
+    best_model = f'{kernel_type}_fold-{fold}_best.pth'
+    save_path = f'../trained_models/{kernel_type}/fold-{fold}/'
     os.makedirs(save_path, exist_ok=True)
 
     qwk_max = 0.
+    qwk = 1
     for epoch in range(1, n_epochs+1):
         print(time.ctime(), 'Epoch:', epoch)
         scheduler.step(epoch-1)
 
         train_loss = train_epoch(model, train_loader, optimizer, criterion, use_amp=use_amp)
-        val_loss, acc, qwk = val_epoch(model, valid_loader, criterion, df_valid)
+        val_loss, acc, (qwk, qwk_k, qwk_r) = val_epoch(model, valid_loader, criterion, df_valid)
 
+        writer.add_scalars(f'{kernel_type}/{fold}/loss', {'train_loss' : np.mean(train_loss), 'val_loss' : val_loss}, epoch)
+        writer.add_scalars(f'{kernel_type}/{fold}/qwk', {'qwk' :qwk, 'qwk_k' : qwk_k, 'qwk_r': qwk_r}, epoch)
         content = "{}, Epoch {}, lr: {:.7f}, train loss: {:.5f}," \
                 " val loss: {:.5f}, acc: {:.5f}, qwk: {:.5f}".format(
                     time.ctime(), epoch, optimizer.param_groups[0]["lr"], 
@@ -198,11 +205,17 @@ def main():
             appender.write(content + '\n')
 
         if qwk > qwk_max:
-            print('score2 ({:.6f} --> {:.6f}).  Saving model ...'.format(qwk_max, qwk))
+            print('score2 ({:.6f} --> {:.6f}).  Saving current best model ...'.format(qwk_max, qwk))
             torch.save(model.state_dict(), os.path.join(save_path, best_model))
             qwk_max = qwk
 
-    torch.save(model.state_dict(), os.path.join(save_path, final_model))
+        torch.save({
+            'epoch' : epoch,
+            'model_state_dict' : model.state_dict(),
+            'optimizer_state_dict' : optimizer.state_dict(),
+            'scheduler_state_dict' : scheduler.state_dict(),
+            'qwk_max' : qwk_max  
+        }, os.path.join(save_path, f'{kernel_type}_fold-{fold}_{epoch}.pth'))
 
 if __name__ == '__main__':
     main()
