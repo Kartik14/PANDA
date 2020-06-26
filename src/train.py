@@ -25,7 +25,7 @@ try:
 except ModuleNotFoundError:
     APEX_AVAILABLE = False
     
-from model import enetv2
+from model import enet
 from data_loader import PANDADataset, collate_fn
 
 device = torch.device('cuda')
@@ -35,11 +35,11 @@ def train_epoch(model, loader, optimizer, criterion, use_amp=False):
     model.train()
     train_loss = []
     bar = tqdm(loader)
-    for (data, target) in bar:
+    for (data, num_tiles, target, _) in bar:
         
         data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
-        logits = model(data)
+        logits, _ = model(data, num_tiles)
         loss = criterion(logits, target)
         if use_amp:
             with amp.scale_loss(loss, optimizer) as scaled_loss:
@@ -63,10 +63,9 @@ def val_epoch(model, loader, criterion, df_valid):
     TARGETS = []
 
     with torch.no_grad():
-        for (data, target) in tqdm(loader):
+        for (data, num_tiles, target, _) in tqdm(loader):
             data, target = data.to(device), target.to(device)
-            logits = model(data)
-
+            logits, _ = model(data, num_tiles)
             loss = criterion(logits, target)
 
             pred = logits.sigmoid().sum(1).detach().round()            
@@ -94,24 +93,23 @@ def val_epoch(model, loader, criterion, df_valid):
 def main():
 
     data_dir = '../data/'
-    df_biopsy = pd.read_csv(os.path.join(data_dir, 'train.csv'))
-    image_folder = os.path.join(data_dir, 'train_images_tiles_36_256x256')
+    df_biopsy = pd.read_csv(os.path.join(data_dir, 'train.csv'), comment='#')
+    image_folder = os.path.join(data_dir, 'train_images')
 
-    kernel_type = 'efficientnet-b0-36_256x256_tile_MIL'
+    kernel_type = 'MIL_2stage_stage-1_enet_b0_64x64_2'
     enet_type = 'efficientnet-b0'
     num_folds = 5
     fold = 0
-    tile_size = 256
-    image_size = 256
-    n_tiles = 36
-    batch_size = 8
+    tile_size = 64
+    batch_size = 64
     num_workers = 16
-    out_dim = 5
+    out_dim = 1
     init_lr = 3e-4
     warmup_factor = 10
     warmup_epo = 1
-    n_epochs = 30
+    n_epochs = 20
     attn_dim = 256
+    tile_drop_prob = 0.2
     use_amp = True
 
     if use_amp and not APEX_AVAILABLE:
@@ -139,10 +137,10 @@ def main():
     df_train = df_biopsy.loc[df_biopsy['fold'] != fold]
     df_valid = df_biopsy.loc[df_biopsy['fold'] == fold]
 
-    dataset_train = PANDADataset(df_train, image_folder, n_tiles, out_dim, \
-        transform=transform_train)
-    dataset_valid = PANDADataset(df_valid, image_folder, n_tiles, out_dim, \
-        transform=transform_val)
+    dataset_train = PANDADataset(df_train, tile_size, image_folder, \
+        out_dim, 'train', transform=transform_train, tile_drop_prob=tile_drop_prob)
+    dataset_valid = PANDADataset(df_valid, tile_size, image_folder, \
+        out_dim, 'eval', transform=transform_val)
 
     train_loader = DataLoader(dataset_train, 
                             batch_size=batch_size, 
@@ -155,14 +153,13 @@ def main():
                             num_workers=num_workers,
                             collate_fn=collate_fn)
 
-    model = enetv2(enet_type, out_dim, attn_dim, n_tiles)    
+    model = enet(enet_type, out_dim, attn_dim)    
     model = model.to(device)
 
-    optimizer = optim.Adam(model.parameters(), lr=init_lr/warmup_factor)
-    scheduler_cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, n_epochs-warmup_epo)
-    scheduler = GradualWarmupScheduler(optimizer, multiplier=warmup_factor, \
-                                    total_epoch=warmup_epo, after_scheduler=scheduler_cosine)
-
+    optimizer = optim.Adam(model.parameters(), lr=init_lr)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, n_epochs)
+    # scheduler = GradualWarmupScheduler(optimizer, multiplier=warmup_factor, \
+    #                                 total_epoch=warmup_epo, after_scheduler=scheduler_cosine)
     criterion = nn.BCEWithLogitsLoss()
 
     if use_amp:
@@ -170,7 +167,7 @@ def main():
             model, optimizer, opt_level="O1", 
             keep_batchnorm_fp32=None, loss_scale="dynamic"
         )
-    model = nn.DataParallel(model)
+    # model = nn.DataParallel(model)
 
     print("Number of train samples : {}".format(len(dataset_train)))
     print("Number of validation samples : {}".format(len(dataset_valid)))
@@ -180,7 +177,7 @@ def main():
     save_path = '../trained_models'
     os.makedirs(save_path, exist_ok=True)
 
-    qwk_max = 0.
+    acc_max = 0.
     for epoch in range(1, n_epochs+1):
         print(time.ctime(), 'Epoch:', epoch)
         scheduler.step(epoch-1)
@@ -198,10 +195,10 @@ def main():
         with open('log_{}_fold-{}.txt'.format(kernel_type, fold), 'a') as appender:
             appender.write(content + '\n')
 
-        if qwk > qwk_max:
-            print('score2 ({:.6f} --> {:.6f}).  Saving model ...'.format(qwk_max, qwk))
+        if acc > acc_max:
+            print('score2 ({:.6f} --> {:.6f}).  Saving model ...'.format(acc_max, acc))
             torch.save(model.state_dict(), os.path.join(save_path, best_model))
-            qwk_max = qwk
+            acc_max = acc
 
     torch.save(model.state_dict(), os.path.join(save_path, final_model))
 

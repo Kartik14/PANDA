@@ -1,0 +1,8 @@
+Sun Jun 21 17:58:33 2020, Epoch 1, lr: 0.0003000, train loss: 0.42716, val loss: 0.39090, acc: 81.30005, qwk: 0.45863
+Sun Jun 21 18:03:47 2020, Epoch 2, lr: 0.0002982, train loss: 0.36103, val loss: 0.36891, acc: 83.60810, qwk: 0.62158
+Sun Jun 21 18:09:00 2020, Epoch 3, lr: 0.0002927, train loss: 0.33850, val loss: 0.31553, acc: 84.64437, qwk: 0.63202
+Sun Jun 21 18:14:16 2020, Epoch 4, lr: 0.0002837, train loss: 0.32222, val loss: 0.31312, acc: 85.68064, qwk: 0.64817
+Sun Jun 21 18:19:28 2020, Epoch 5, lr: 0.0002714, train loss: 0.30136, val loss: 0.31845, acc: 84.73858, qwk: 0.64768
+Sun Jun 21 18:24:40 2020, Epoch 6, lr: 0.0002561, train loss: 0.29228, val loss: 0.30840, acc: 85.58643, qwk: 0.65028
+Sun Jun 21 18:29:51 2020, Epoch 7, lr: 0.0002382, train loss: 0.27283, val loss: 0.37713, acc: 81.72398, qwk: 0.59762
+Sun Jun 21 18:35:02 2020, Epoch 8, lr: 0.0002181, train loss: 0.25751, val loss: 0.31960, acc: 85.72774, qwk: 0.66436
