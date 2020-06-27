@@ -3,11 +3,10 @@ import time
 import skimage
 import numpy as np
 import pandas as pd
-from ast import literal_eval
 from PIL import Image
 from sklearn.model_selection import StratifiedKFold
 import matplotlib.pyplot as plt
-from sklearn.metrics import cohen_kappa_score
+from sklearn.metrics import cohen_kappa_score, confusion_matrix
 from tqdm import tqdm
 
 import torch
@@ -15,6 +14,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torchvision import transforms
+import torchvision.transforms.functional as TF
 import torchvision.utils as vutils
 from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader, Dataset
@@ -32,6 +32,16 @@ from model import enetv2
 from data_loader import PANDADataset
 
 device = torch.device('cuda')
+
+class RotationTransform:
+    """Rotate by one of the given angles."""
+
+    def __init__(self, angles):
+        self.angles = angles
+
+    def __call__(self, x):
+        angle = np.random.choice(self.angles)
+        return TF.rotate(x, angle)
 
 def train_epoch(model, loader, optimizer, criterion, use_amp=False):
 
@@ -100,13 +110,13 @@ def main():
     df_biopsy = pd.read_csv(os.path.join(data_dir, 'train.csv'))
     image_folder = os.path.join(data_dir, 'train_images')
 
-    kernel_type = 'efficientnet-b0_9x512x512'
-    enet_type = 'efficientnet-b0'
+    kernel_type = 'efficientnet-b3_36x256x256'
+    enet_type = 'efficientnet-b3'
     num_folds = 5
     fold = 0
-    tile_size = 512
-    n_tiles = 9
-    batch_size = 8
+    tile_size = 256
+    n_tiles = 32
+    batch_size = 9
     num_workers = 24
     out_dim = 5
     init_lr = 3e-4
@@ -132,7 +142,7 @@ def main():
         transforms.RandomChoice([
             transforms.RandomHorizontalFlip(p=0.5),
             transforms.RandomVerticalFlip(p=0.5),
-            transforms.RandomRotation(90)
+            RotationTransform([90, -90])
         ]),
         transforms.ToTensor(),
         transforms.Normalize(mean, std)
@@ -184,7 +194,6 @@ def main():
     os.makedirs(save_path, exist_ok=True)
 
     qwk_max = 0.
-    qwk = 1
     for epoch in range(1, n_epochs+1):
         print(time.ctime(), 'Epoch:', epoch)
         scheduler.step(epoch-1)
@@ -192,8 +201,8 @@ def main():
         train_loss = train_epoch(model, train_loader, optimizer, criterion, use_amp=use_amp)
         val_loss, acc, (qwk, qwk_k, qwk_r) = val_epoch(model, valid_loader, criterion, df_valid)
 
-        writer.add_scalars(f'{kernel_type}/{fold}/loss', {'train_loss' : np.mean(train_loss), 'val_loss' : val_loss}, epoch)
-        writer.add_scalars(f'{kernel_type}/{fold}/qwk', {'qwk' :qwk, 'qwk_k' : qwk_k, 'qwk_r': qwk_r}, epoch)
+        writer.add_scalars(f'loss', {'train' : np.mean(train_loss), 'val' : val_loss}, epoch)
+        writer.add_scalars(f'qwk', {'total' :qwk, 'Karolinska' : qwk_k, 'Radboud': qwk_r}, epoch)
         content = "{}, Epoch {}, lr: {:.7f}, train loss: {:.5f}," \
                 " val loss: {:.5f}, acc: {:.5f}, qwk: {:.5f}".format(
                     time.ctime(), epoch, optimizer.param_groups[0]["lr"], 
